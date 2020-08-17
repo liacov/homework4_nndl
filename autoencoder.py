@@ -3,6 +3,7 @@
 import os
 import torch
 import random
+import numpy as np
 from torch import nn
 from tqdm import tqdm
 from torchvision import transforms
@@ -12,12 +13,12 @@ from torch.utils.data import DataLoader, Subset
 
 
 #%% Define the network architecture
-    
+
 class Autoencoder(nn.Module):
-    
+
     def __init__(self, encoded_space_dim):
         super().__init__()
-        
+
         ### Encoder
         self.encoder_cnn = nn.Sequential(
             nn.Conv2d(1, 8, 3, stride=2, padding=1),
@@ -32,7 +33,7 @@ class Autoencoder(nn.Module):
             nn.ReLU(True),
             nn.Linear(64, encoded_space_dim)
         )
-        
+
         ### Decoder
         self.decoder_lin = nn.Sequential(
             nn.Linear(encoded_space_dim, 64),
@@ -61,7 +62,7 @@ class Autoencoder(nn.Module):
         # Apply linear layers
         x = self.encoder_lin(x)
         return x
-    
+
     def decode(self, x):
         # Apply linear layers
         x = self.decoder_lin(x)
@@ -76,8 +77,7 @@ class Autoencoder(nn.Module):
 def train_epoch(net, dataloader, loss_fn, optimizer, device):
     # Training
     net.train()
-    conc_out = torch.Tensor().float()
-    conc_label = torch.Tensor().float()
+    train_loss = []
     for sample_batch in dataloader:
         # Extract data and move tensors to the selected device
         image_batch = sample_batch[0].to(device)
@@ -88,15 +88,9 @@ def train_epoch(net, dataloader, loss_fn, optimizer, device):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        # Print loss
-        # print('\t partial train loss: %f' % (loss.data))
-        # Concatenate with previous outputs
-        conc_out = torch.cat([conc_out, output.cpu()])
-        conc_label = torch.cat([conc_label, image_batch.cpu()]) 
-        del image_batch       
-        # Evaluate global loss
-        train_loss = loss_fn(conc_out, conc_label)
-    return train_loss
+        # Save current loss
+        train_loss.append(loss.data.item())
+    return np.mean(train_loss)
 
 ### Testing function
 def test_epoch(net, dataloader, loss_fn, optimizer, device):
@@ -112,14 +106,15 @@ def test_epoch(net, dataloader, loss_fn, optimizer, device):
             out = net(image_batch)
             # Concatenate with previous outputs
             conc_out = torch.cat([conc_out, out.cpu()])
-            conc_label = torch.cat([conc_label, image_batch.cpu()]) 
+            conc_label = torch.cat([conc_label, image_batch.cpu()])
             del image_batch
         # Evaluate global loss
         val_loss = loss_fn(conc_out, conc_label)
     return val_loss.data
 
-def train_CV(indices, device, train_dataset, encoded_dim=8, lr=1e-3, wd=0, num_epochs=20):
 
+### k-Fold Cross Validation function
+def train_CV(indices, device, train_dataset, encoded_dim=8, lr=1e-3, wd=0, num_epochs=20):
     # K_FOLD parameters
     kf = KFold(n_splits=3, random_state=42, shuffle=True)
 
@@ -134,8 +129,8 @@ def train_CV(indices, device, train_dataset, encoded_dim=8, lr=1e-3, wd=0, num_e
 
         # initialize the net
         cv_net = Autoencoder(encoded_space_dim=encoded_dim)
-        
-        # Move all the network parameters to the selected device 
+
+        # Move all the network parameters to the selected device
         # (if they are already on that device nothing happens)
         cv_net.to(device)
 
@@ -153,13 +148,13 @@ def train_CV(indices, device, train_dataset, encoded_dim=8, lr=1e-3, wd=0, num_e
         for epoch in range(num_epochs):
             print('EPOCH %d/%d' % (epoch + 1, num_epochs))
             ### Training
-            avg_train_loss = train_epoch(cv_net, dataloader=train_dataloader_fold, 
+            avg_train_loss = train_epoch(cv_net, dataloader=train_dataloader_fold,
                                          loss_fn=loss_fn, optimizer=optim,
-                                         device=device) 
+                                         device=device)
             ### Validation
-            avg_val_loss = test_epoch(cv_net, dataloader=valid_dataloader_fold, 
+            avg_val_loss = test_epoch(cv_net, dataloader=valid_dataloader_fold,
                                       loss_fn=loss_fn, optimizer=optim,
-                                      device=device) 
+                                      device=device)
             # Print loss
             print('\t TRAINING - EPOCH %d/%d - loss: %f' % (epoch + 1, num_epochs, avg_train_loss))
             print('\t VALIDATION - EPOCH %d/%d - loss: %f\n' % (epoch + 1, num_epochs, avg_val_loss))
@@ -171,5 +166,5 @@ def train_CV(indices, device, train_dataset, encoded_dim=8, lr=1e-3, wd=0, num_e
         train_loss_log.append(train_loss_log_fold)
         val_loss_log.append(val_loss_log_fold)
 
-    return {"train loss": np.mean(train_loss_log, axis=0), 
+    return {"train loss": np.mean(train_loss_log, axis=0),
             "validation loss": np.mean(val_loss_log, axis=0)}
