@@ -6,6 +6,7 @@ import random
 import numpy as np
 from torch import nn
 from tqdm import tqdm
+from copy import deepcopy
 from torchvision import transforms
 from torchvision.datasets import MNIST
 from sklearn.model_selection import KFold
@@ -168,3 +169,56 @@ def train_CV(indices, device, train_dataset, encoded_dim=8, lr=1e-3, wd=0, num_e
 
     return {"train loss": np.mean(train_loss_log, axis=0),
             "validation loss": np.mean(val_loss_log, axis=0)}
+
+### Testing function with random noise
+def test_random_noise(net, dataloader, loss_fn, device, noise, sigma = 1, plot = True):
+    """ Test the trained autoencoder on randomly corrupted images.
+    The random noise can be generated using the 'gaussian', 'uniform' or 'occlusion' method. """
+    np.random.seed(42)
+
+    net.eval() # Evaluation mode (e.g. disable dropout)
+    with torch.no_grad(): # No need to track the gradients
+        conc_out = torch.Tensor().float()
+        conc_label = torch.Tensor().float()
+        for sample_batch in dataloader:
+            # Extract data and move tensors to the selected device
+            image_batch = sample_batch[0].to(device)
+            # Add noise
+            if noise == 'gaussian':
+                noise = torch.Tensor(np.random.normal(0,sigma,sample_batch[0].shape))
+                corrupted_image = (sample_batch[0] + noise).to(device)
+            if noise == 'uniform':
+                noise = torch.Tensor(np.random.rand(*sample_batch[0].shape))
+                corrupted_image = (sample_batch[0] + noise).to(device)
+            if noise == 'occlusion':
+                idx = np.random.choice((0,1), 2) 
+                corrupted_image = deepcopy(image_batch)
+                corrupted_image[:, :, idx[0]*14:(idx[0]+1)*14, idx[1]*14:(idx[1]+1)*14] = 0
+            
+            # Forward pass
+            out = net(corrupted_image)
+
+            # Concatenate with previous outputs
+            conc_out = torch.cat([conc_out, out.cpu()])
+            conc_label = torch.cat([conc_label, image_batch.cpu()]) 
+
+        # plot images
+        if plot:
+            plt.figure(figsize=(15, 5))
+            plt.subplot(1, 3, 1)
+            plt.title("Original", fontsize=18)
+            plt.imshow(image_batch[0].squeeze().cpu(), cmap='gist_gray')
+            plt.subplot(1, 3, 2)
+            plt.title("Gaussian noise N(0, {})".format(sigma), fontsize=18)
+            plt.imshow(corrupted_image[0].squeeze().cpu(), cmap='gist_gray')
+            plt.subplot(1, 3, 3)
+            plt.title("Reconstructed", fontsize=18)
+            plt.imshow(out[0].squeeze().cpu(), cmap='gist_gray')
+            plt.savefig("gauss_{}.pdf".format(sigma))
+            files.download("gauss_{}.pdf".format(sigma))
+            plt.show()
+
+
+        # Evaluate global loss
+        val_loss = loss_fn(conc_out, conc_label)
+    return val_loss.data
